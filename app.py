@@ -3,7 +3,7 @@ from flask import Flask, jsonify, request
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
-from supabase import create_client, Client, ClientOptions
+from supabase import create_client, Client
 import re
 from email_validator import validate_email, EmailNotValidError
 
@@ -26,10 +26,6 @@ try:
     supabase: Client = create_client(
         SUPABASE_URL,
         SUPABASE_KEY,
-        options=ClientOptions(
-            auto_refresh_token=False,
-            persist_session=False
-        )
     )
 except Exception as e:
     logging.error(f"Failed to initialize Supabase client: {str(e)}")
