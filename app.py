@@ -1,10 +1,14 @@
+import logging
 from flask import Flask, jsonify, request
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 import re
 from email_validator import validate_email, EmailNotValidError
+
+# Configure logging for debugging
+logging.basicConfig(level=logging.DEBUG)
 
 load_dotenv()
 
@@ -17,15 +21,19 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
 
-# Initialize Supabase client
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY,
-    options=ClientOptions(
-        auto_refresh_token=False,  # Disable features that might trigger proxy
-        persist_session=False
+# Initialize Supabase client with minimal options to avoid proxy issue
+try:
+    supabase: Client = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY,
+        options=ClientOptions(
+            auto_refresh_token=False,
+            persist_session=False
+        )
     )
-)
+except Exception as e:
+    logging.error(f"Failed to initialize Supabase client: {str(e)}")
+    raise
 
 # --- Validation Functions ---
 
@@ -46,18 +54,26 @@ def validate_lead_data(data, check_existing=True):
         if not validate_phone_number(data['phone']):
             errors.append("Invalid phone number format. Use +91 XXXXXXXXXX or 0XXXXXXXXXX")
         elif check_existing:
-            result = supabase.table('leads_table').select("*").eq('phone', data['phone']).limit(1).execute()
-            if result.data:
-                errors.append("Phone number already exists")
+            try:
+                result = supabase.table('leads_table').select("*").eq('phone', data['phone']).limit(1).execute()
+                if result.data:
+                    errors.append("Phone number already exists")
+            except Exception as e:
+                logging.error(f"Phone validation error: {str(e)}")
+                errors.append("Error validating phone number")
 
     # Email validation
     if 'email' in data and data['email']:
         try:
             validate_email(data['email'])
             if check_existing:
-                result = supabase.table('leads_table').select("*").eq('email', data['email']).limit(1).execute()
-                if result.data:
-                    errors.append("Email already exists")
+                try:
+                    result = supabase.table('leads_table').select("*").eq('email', data['email']).limit(1).execute()
+                    if result.data:
+                        errors.append("Email already exists")
+                except Exception as e:
+                    logging.error(f"Email validation error: {str(e)}")
+                    errors.append("Error validating email")
         except EmailNotValidError:
             errors.append("Invalid email format")
 
@@ -67,15 +83,23 @@ def validate_lead_data(data, check_existing=True):
 
 @app.route('/api/leads', methods=['GET'])
 def get_all_leads():
-    response = supabase.table('leads_table').select("*").execute()
-    return jsonify({"leads": response.data})
+    try:
+        response = supabase.table('leads_table').select("*").execute()
+        return jsonify({"leads": response.data})
+    except Exception as e:
+        logging.error(f"Error fetching leads: {str(e)}")
+        return jsonify({"message": f"Error fetching leads: {str(e)}"}), 500
 
 @app.route('/api/leads/<int:lead_id>', methods=['GET'])
 def get_lead(lead_id):
-    response = supabase.table('leads_table').select("*").eq('id', lead_id).execute()
-    if response.data:
-        return jsonify({"lead": response.data[0]})
-    return jsonify({"message": "Lead not found"}), 404
+    try:
+        response = supabase.table('leads_table').select("*").eq('id', lead_id).execute()
+        if response.data:
+            return jsonify({"lead": response.data[0]})
+        return jsonify({"message": "Lead not found"}), 404
+    except Exception as e:
+        logging.error(f"Error fetching lead {lead_id}: {str(e)}")
+        return jsonify({"message": f"Error fetching lead: {str(e)}"}), 500
 
 @app.route('/api/leads', methods=['POST'])
 def create_lead():
@@ -97,6 +121,7 @@ def create_lead():
         response = supabase.table('leads_table').insert(data).execute()
         return jsonify({"lead": response.data[0]}), 201
     except Exception as e:
+        logging.error(f"Error creating lead: {str(e)}")
         return jsonify({"message": f"Error creating lead: {str(e)}"}), 500
 
 @app.route('/api/leads/<int:lead_id>', methods=['PUT'])
@@ -105,23 +130,24 @@ def update_lead(lead_id):
     if not data:
         return jsonify({"message": "No data provided"}), 400
 
-    existing_lead = supabase.table('leads_table').select("*").eq('id', lead_id).execute()
-    if not existing_lead.data:
-        return jsonify({"message": "Lead not found"}), 404
-
-    check_existing = False
-    if ('email' in data and data['email'] != existing_lead.data[0]['email']) or \
-       ('phone' in data and data['phone'] != existing_lead.data[0]['phone']):
-        check_existing = True
-
-    errors = validate_lead_data(data, check_existing)
-    if errors:
-        return jsonify({"errors": errors}), 400
-
     try:
+        existing_lead = supabase.table('leads_table').select("*").eq('id', lead_id).execute()
+        if not existing_lead.data:
+            return jsonify({"message": "Lead not found"}), 404
+
+        check_existing = False
+        if ('email' in data and data['email'] != existing_lead.data[0]['email']) or \
+           ('phone' in data and data['phone'] != existing_lead.data[0]['phone']):
+            check_existing = True
+
+        errors = validate_lead_data(data, check_existing)
+        if errors:
+            return jsonify({"errors": errors}), 400
+
         response = supabase.table('leads_table').update(data).eq('id', lead_id).execute()
         return jsonify({"lead": response.data[0]})
     except Exception as e:
+        logging.error(f"Error updating lead {lead_id}: {str(e)}")
         return jsonify({"message": f"Error updating lead: {str(e)}"}), 500
 
 @app.route('/api/leads/<int:lead_id>', methods=['DELETE'])
@@ -132,6 +158,7 @@ def delete_lead(lead_id):
             return jsonify({"message": f"Lead {lead_id} deleted successfully"})
         return jsonify({"message": "Lead not found"}), 404
     except Exception as e:
+        logging.error(f"Error deleting lead {lead_id}: {str(e)}")
         return jsonify({"message": f"Error deleting lead: {str(e)}"}), 500
 
 # --- Main ---
